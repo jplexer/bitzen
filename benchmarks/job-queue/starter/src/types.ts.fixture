@@ -1,0 +1,9 @@
+export type Status = "queued" | "running" | "succeeded" | "failed" | "cancelled";
+export interface Job {
+  id: string; payload: unknown; priority: number; maxAttempts: number; attempts: number;
+  sequence: number; status: Status; createdAt: number; availableAt: number;
+  leaseUntil: number | null; lastError: string | null;
+}
+export interface NewJob { id: string; payload: unknown; priority?: number; maxAttempts?: number }
+export interface Options { baseDelayMs: number; maxDelayMs: number }
+export interface QueueSnapshot { version: 1; options: Options; jobs: Job[]; nextSequence: number }

@@ -1,0 +1,7 @@
+{
+  "lead": { "provider": "openrouter", "model": "vendor/your-lead-model" },
+  "sidekick": { "provider": "openrouter", "model": "vendor/your-sidekick-model" },
+  "maxCalls": 40,
+  "maxTurns": 20,
+  "maxOutputTokens": 8192
+}

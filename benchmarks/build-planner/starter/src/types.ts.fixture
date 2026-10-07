@@ -1,0 +1,2 @@
+export interface Task { id: string; deps: string[] }
+export interface BuildPlan { order: string[]; layers: string[][]; skipped: string[] }

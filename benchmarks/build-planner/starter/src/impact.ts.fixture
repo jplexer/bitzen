@@ -1,0 +1,7 @@
+import type { Task } from "./types.ts";
+
+export function affectedTasks(tasks: Task[], changed: string[]): string[] {
+  const affected = [...changed];
+  for (const task of tasks) if (task.deps.some(id => changed.includes(id))) affected.push(task.id);
+  return affected.sort();
+}

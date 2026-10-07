@@ -1,0 +1,24 @@
+import { expect, test } from "bun:test";
+import { BuildPlanner } from "../src/planner.ts";
+import { affectedTasks } from "../src/impact.ts";
+
+const tasks = () => [
+  {id:"types",deps:[]}, {id:"core",deps:["types"]},
+  {id:"ui",deps:["core"]}, {id:"cli",deps:["core"]}, {id:"docs",deps:[]},
+];
+test("empty graph has an empty plan",()=>{expect(new BuildPlanner([]).plan()).toEqual({order:[],layers:[],skipped:[]});});
+test("prerequisites build before target",()=>{
+  expect(new BuildPlanner(tasks()).plan(["ui"]).order).toEqual(["types","core","ui"]);
+});
+test("independent tasks share a parallel wave",()=>{
+  expect(new BuildPlanner(tasks()).plan().layers).toEqual([["docs","types"],["core"],["cli","ui"]]);
+});
+test("changes propagate through all dependents",()=>{
+  expect(affectedTasks(tasks(),["types"])).toEqual(["cli","core","types","ui"]);
+});
+test("unchanged prerequisites are skipped",()=>{
+  expect(new BuildPlanner(tasks()).plan(["ui"],["core"])).toEqual({order:["core","ui"],layers:[["core"],["ui"]],skipped:["types"]});
+});
+test("cycles are rejected",()=>{
+  expect(()=>new BuildPlanner([{id:"a",deps:["b"]},{id:"b",deps:["a"]}])).toThrow("cycle");
+});

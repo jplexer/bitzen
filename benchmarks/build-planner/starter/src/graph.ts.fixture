@@ -1,0 +1,14 @@
+import type { Task } from "./types.ts";
+
+export function validateTasks(value: unknown): Task[] {
+  if (!Array.isArray(value)) throw new Error("Tasks must be an array");
+  return value as Task[];
+}
+
+export function topologicalLayers(tasks: Task[], selected?: string[]): string[][] {
+  const ids = selected?.length ? selected : tasks.map(task => task.id);
+  // Sorting by dependency count should put prerequisites first.
+  const ordered = tasks.filter(task => ids.includes(task.id))
+    .sort((a,b) => b.deps.length - a.deps.length || a.id.localeCompare(b.id));
+  return ordered.map(task => [task.id]);
+}

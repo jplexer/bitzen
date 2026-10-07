@@ -1,0 +1,188 @@
+import { expect, test } from "bun:test";
+const target = process.env.BITZEN_BENCH_TARGET!;
+const { BuildPlanner } = await import(target + "/src/planner.ts");
+const { validateTasks, topologicalLayers } = await import(target + "/src/graph.ts");
+const { affectedTasks } = await import(target + "/src/impact.ts");
+type Task = {id:string;deps:string[]};
+const graph = (): Task[] => [
+  {id:"types",deps:[]},{id:"core",deps:["types"]},
+  {id:"ui",deps:["core"]},{id:"cli",deps:["core"]},{id:"docs",deps:[]},
+];
+const create = () => new BuildPlanner(graph());
+
+test("empty graphs and empty selections",()=>{
+  const p = new BuildPlanner([]);
+  expect(p.plan()).toEqual({order:[],layers:[],skipped:[]});
+  expect(p.list()).toEqual([]); expect(validateTasks([])).toEqual([]);
+  expect(topologicalLayers([])).toEqual([]); expect(affectedTasks([],[])).toEqual([]);
+  expect(topologicalLayers(graph(),[])).toEqual([]);
+});
+test("all tasks use complete parallel waves and order equals flattened layers",()=>{
+  expect(create().plan()).toEqual({order:["docs","types","core","cli","ui"],layers:[["docs","types"],["core"],["cli","ui"]],skipped:[]});
+});
+test("target closure includes transitive prerequisites and excludes unrelated tasks",()=>{
+  expect(create().plan(["ui"])).toEqual({order:["types","core","ui"],layers:[["types"],["core"],["ui"]],skipped:[]});
+});
+test("empty targets are not interpreted as all tasks",()=>{
+  expect(create().plan([])).toEqual({order:[],layers:[],skipped:[]});
+});
+test("empty changed means everything requested is cached",()=>{
+  expect(create().plan(["ui"],[])).toEqual({order:[],layers:[],skipped:["core","types","ui"]});
+  expect(create().plan(undefined,[]).skipped).toEqual(["cli","core","docs","types","ui"]);
+});
+test("changes propagate transitively through dependents",()=>{
+  expect(affectedTasks(graph(),["types"])).toEqual(["cli","core","types","ui"]);
+  expect(affectedTasks(graph(),["core"])).toEqual(["cli","core","ui"]);
+  expect(affectedTasks(graph(),["ui"])).toEqual(["ui"]);
+  expect(affectedTasks(graph(),[])).toEqual([]);
+});
+test("cached prerequisites are not re-added to execution",()=>{
+  expect(create().plan(["ui"],["core"])).toEqual({order:["core","ui"],layers:[["core"],["ui"]],skipped:["types"]});
+  expect(create().plan(["ui"],["ui"])).toEqual({order:["ui"],layers:[["ui"]],skipped:["core","types"]});
+});
+test("changes outside target closure produce no work and only closure nodes are skipped",()=>{
+  expect(create().plan(["ui"],["docs"])).toEqual({order:[],layers:[],skipped:["core","types","ui"]});
+});
+test("multiple targets share prerequisites without duplicating execution",()=>{
+  expect(create().plan(["ui","cli"])).toEqual({order:["types","core","cli","ui"],layers:[["types"],["core"],["cli","ui"]],skipped:[]});
+});
+test("multiple dirty roots union their affected subgraphs",()=>{
+  expect(create().plan(["ui","docs"],["core","docs"])).toEqual({order:["core","docs","ui"],layers:[["core","docs"],["ui"]],skipped:["types"]});
+});
+test("repeated target, change and selected ids are deduplicated",()=>{
+  expect(create().plan(["ui","ui"],["types","types"])).toEqual(create().plan(["ui"],["types"]));
+  expect(affectedTasks(graph(),["core","ui","core"])).toEqual(["cli","core","ui"]);
+  expect(topologicalLayers(graph(),["ui","ui","core"])).toEqual([["core"],["ui"]]);
+});
+test("selected helper uses exactly the induced subgraph",()=>{
+  expect(topologicalLayers(graph(),["ui","types"])).toEqual([["types","ui"]]);
+  expect(topologicalLayers(graph(),["cli","ui"])).toEqual([["cli","ui"]]);
+});
+test("waves are whole frontiers rather than single-node greedy scheduling",()=>{
+  const tasks=[{id:"z",deps:[]},{id:"a",deps:[]},{id:"b",deps:["a"]},{id:"c",deps:["z"]}];
+  expect(topologicalLayers(tasks)).toEqual([["a","z"],["b","c"]]);
+});
+test("diamond dependency needs both parents before the join",()=>{
+  const tasks=[{id:"join",deps:["left","right"]},{id:"right",deps:["root"]},{id:"root",deps:[]},{id:"left",deps:["root"]}];
+  expect(topologicalLayers(tasks)).toEqual([["root"],["left","right"],["join"]]);
+  expect(affectedTasks(tasks,["root"])).toEqual(["join","left","right","root"]);
+});
+test("string ordering is ordinal including case and Unicode",()=>{
+  const ids=["z","é","a","Z","A","界","🙂"];
+  expect(topologicalLayers(ids.map(id=>({id,deps:[]})))).toEqual([[...ids].sort()]);
+});
+test("special object-property ids are ordinary graph nodes",()=>{
+  const tasks=[{id:"__proto__",deps:[]},{id:"constructor",deps:["__proto__"]},{id:"toString",deps:["constructor"]}];
+  expect(new BuildPlanner(tasks).plan().order).toEqual(["__proto__","constructor","toString"]);
+  expect(affectedTasks(tasks,["__proto__"])).toEqual(["__proto__","constructor","toString"]);
+});
+test("nonblank ids are preserved exactly",()=>{
+  const p=new BuildPlanner([{id:" root ",deps:[]},{id:"child",deps:[" root "]}]);
+  expect(p.plan(["child"]).order).toEqual([" root ","child"]);
+  expect(()=>p.plan(["root"])).toThrow();
+});
+test("task/dependency permutations produce deterministic plans",()=>{
+  const tasks=[...graph(),{id:"all",deps:["ui","cli","docs"]}];
+  const reversed=[...tasks].reverse().map(task=>({id:task.id,deps:[...task.deps].reverse()}));
+  expect(new BuildPlanner(tasks).plan()).toEqual(new BuildPlanner(reversed).plan());
+  expect(new BuildPlanner(reversed).list()).toEqual(reversed);
+});
+test("constructor, list and validated outputs are independent copies",()=>{
+  const input=graph(), p=new BuildPlanner(input), before=p.list();
+  input[0].id="changed";input[1].deps.push("missing");
+  const list=p.list();list[0].id="other";list[1].deps.length=0;list.push({id:"new",deps:[]});
+  expect(p.list()).toEqual(before);
+  const raw=graph(), validated=validateTasks(raw);validated[1].deps.length=0;validated[0].id="changed";
+  expect(raw).toEqual(graph());
+});
+test("all planning inputs remain unchanged, including frozen arrays",()=>{
+  const tasks=graph();for(const task of tasks){Object.freeze(task.deps);Object.freeze(task);}Object.freeze(tasks);
+  const targets=Object.freeze(["ui","cli"]), changes=Object.freeze(["core","types"]);
+  const p=new BuildPlanner(tasks);
+  p.plan(targets,changes);topologicalLayers(tasks,targets);affectedTasks(tasks,changes);validateTasks(tasks);
+  expect(tasks).toEqual(graph());expect(targets).toEqual(["ui","cli"]);expect(changes).toEqual(["core","types"]);
+});
+test("mutated plan arrays never affect later plans",()=>{
+  const p=create(), original=p.plan(["ui"],["core"]), before=structuredClone(original);
+  original.order.push("fake");original.layers[0].push("fake");original.skipped.length=0;
+  expect(p.plan(["ui"],["core"])).toEqual(before);expect(p.list()).toEqual(graph());
+});
+test("replacement owns its input and removes the old graph",()=>{
+  const p=create(), next=[{id:"new",deps:[]}];p.replace(next);next[0].deps.push("missing");
+  expect(p.list()).toEqual([{id:"new",deps:[]}]);expect(p.plan().order).toEqual(["new"]);
+  expect(()=>p.plan(["ui"])).toThrow();p.replace([]);expect(p.plan().order).toEqual([]);
+});
+test.each([
+  ["missing dependency",[{id:"a",deps:["missing"]}]],
+  ["cycle",[{id:"a",deps:["b"]},{id:"b",deps:["a"]}]],
+  ["duplicate",[{id:"a",deps:[]},{id:"a",deps:[]}]],
+  ["wrong container",null],
+])("failed replacement is atomic: %s",(_label,value)=>{
+  const p=create(), before=p.list();expect(()=>p.replace(value)).toThrow();expect(p.list()).toEqual(before);
+  expect(p.plan().order).toEqual(["docs","types","core","cli","ui"]);
+});
+test.each([
+  ["not array",{}], ["null task",[null]], ["array task",[[]]],
+  ["empty id",[{id:"",deps:[]}]], ["blank id",[{id:" \t",deps:[]}]],
+  ["numeric id",[{id:7,deps:[]}]], ["no deps",[{id:"a"}]],
+  ["deps not array",[{id:"a",deps:"b"}]], ["numeric dependency",[{id:"a",deps:[3]}]],
+  ["blank dependency",[{id:"a",deps:[" "]}]],
+  ["duplicate id",[{id:"a",deps:[]},{id:"a",deps:[]}]],
+  ["missing dependency",[{id:"a",deps:["b"]}]],
+  ["duplicate dependency",[{id:"a",deps:[]},{id:"b",deps:["a","a"]}]],
+])("invalid graph rejected: %s",(_label,value)=>{
+  const before=structuredClone(value);expect(()=>validateTasks(value)).toThrow();expect(()=>new BuildPlanner(value)).toThrow();expect(value).toEqual(before);
+});
+test.each(["validate","layers","impact","planner"])("whole-graph cycles rejected by %s",entry=>{
+  const tasks=[{id:"good",deps:[]},{id:"a",deps:["b"]},{id:"b",deps:["a"]}];
+  const call=()=>entry==="validate"?validateTasks(tasks):entry==="layers"?topologicalLayers(tasks,["good"]):entry==="impact"?affectedTasks(tasks,["good"]):new BuildPlanner(tasks).plan(["good"]);
+  expect(call).toThrow(/cycle/i);
+});
+test("self dependency is a cycle",()=>{expect(()=>new BuildPlanner([{id:"a",deps:["a"]}])).toThrow(/cycle/i);});
+test.each(["targets","changed","selected","affected"])("invalid selection rejected: %s",kind=>{
+  for(const ids of [null,"ui",[""],[" "],[7],["missing"]]) {
+    const p=create(), before=p.list();
+    expect(()=>kind==="targets"?p.plan(ids):kind==="changed"?p.plan(undefined,ids):kind==="selected"?topologicalLayers(graph(),ids):affectedTasks(graph(),ids)).toThrow();
+    expect(p.list()).toEqual(before);
+  }
+});
+test("invalid ids throw even when the other selection empties the plan",()=>{
+  expect(()=>create().plan([], ["missing"])).toThrow();expect(()=>create().plan(["missing"],[])).toThrow();
+  expect(()=>create().plan([],null)).toThrow();expect(()=>create().plan(null,[])).toThrow();
+});
+test("extra object properties are ignored",()=>{
+  expect(validateTasks([{id:"a",deps:[],metadata:{nested:1}}])).toEqual([{id:"a",deps:[]}]);
+  expect(new BuildPlanner([{id:"a",deps:[],extra:42}]).list()).toEqual([{id:"a",deps:[]}]);
+});
+test("long chains support both closures and reverse propagation without recursion",()=>{
+  const tasks=Array.from({length:3000},(_,i)=>({id:`n${i}`,deps:i?[`n${i-1}`]:[]}));
+  const p=new BuildPlanner(tasks), full=p.plan(["n2999"]);
+  expect(full.order).toEqual(tasks.map(task=>task.id));expect(full.layers).toHaveLength(3000);
+  expect(affectedTasks(tasks,["n0"])).toHaveLength(3000);
+  expect(p.plan(["n2999"],["n2998"])).toEqual({order:["n2998","n2999"],layers:[["n2998"],["n2999"]],skipped:tasks.slice(0,2998).map(task=>task.id).sort()});
+});
+// An independent oracle uses closure fixed points and dependency depth, not Kahn's
+// ready queue. Seeded DAGs combine dirty filtering, joins and cached prerequisites.
+function oracle(tasks:Task[],targets:string[],changed:string[]) {
+  const closure=new Set(targets), dirty=new Set(changed);
+  let growing=true;
+  while(growing){growing=false;for(const task of tasks){if(closure.has(task.id))for(const dep of task.deps)if(!closure.has(dep)){closure.add(dep);growing=true;}}}
+  growing=true;
+  while(growing){growing=false;for(const task of tasks)if(!dirty.has(task.id)&&task.deps.some(dep=>dirty.has(dep))){dirty.add(task.id);growing=true;}}
+  const selected=new Set([...closure].filter(id=>dirty.has(id))), byId=new Map(tasks.map(task=>[task.id,task]));
+  const depths=new Map<string,number>();
+  const depth=(id:string):number=>{if(depths.has(id))return depths.get(id)!;const deps=byId.get(id)!.deps.filter(dep=>selected.has(dep));const d=deps.length?1+Math.max(...deps.map(depth)):0;depths.set(id,d);return d;};
+  const layers:string[][]=[];
+  for(const id of selected){const d=depth(id);(layers[d]??=[]).push(id);}for(const layer of layers)layer.sort();
+  return {order:layers.flat(),layers,skipped:[...closure].filter(id=>!selected.has(id)).sort()};
+}
+test("seeded mixed graphs match an independent incremental-plan oracle",()=>{
+  let seed=1729;const random=()=>{seed=(Math.imul(seed,1664525)+1013904223)>>>0;return seed/2**32;};
+  for(let round=0;round<30;round++) {
+    const tasks:Task[]=[];
+    for(let i=0;i<12;i++)tasks.push({id:`task-${i}`,deps:tasks.filter(()=>random()<0.25).map(task=>task.id)});
+    const targets=tasks.filter(()=>random()<0.3).map(task=>task.id), changed=tasks.filter(()=>random()<0.2).map(task=>task.id);
+    const shuffled=[...tasks].reverse().map(task=>({id:task.id,deps:[...task.deps].reverse()}));
+    expect(new BuildPlanner(shuffled).plan(targets,changed)).toEqual(oracle(tasks,targets,changed));
+  }
+});

@@ -1,0 +1,97 @@
+import { expect, test } from "bun:test";
+const target=process.env.BITZEN_BENCH_TARGET!;
+const {JobQueue}=await import(target+"/src/queue.ts");
+const {retryDelay}=await import(target+"/src/retry.ts");
+const create=()=>new JobQueue({baseDelayMs:10,maxDelayMs:25});
+const enqueue=(q:any,id="a",extra:any={})=>q.enqueue({id,payload:{nested:{value:1}},...extra},0);
+const snapshot=()=>{const q=create();enqueue(q);return q.snapshot();};
+
+test("priority, FIFO, and insertion-order listing",()=>{
+  const q=create();enqueue(q,"a",{priority:-1});enqueue(q,"b",{priority:4});enqueue(q,"c",{priority:4});
+  expect(q.claim(0,10).id).toBe("b");expect(q.claim(0,10).id).toBe("c");expect(q.claim(0,10).id).toBe("a");
+  expect(q.list().map((j:any)=>j.id)).toEqual(["a","b","c"]);expect(q.claim(1,10)).toBeNull();
+});
+test("not-before, retry exhaustion, and exponential schedule",()=>{
+  const q=create();enqueue(q,"a",{maxAttempts:4});q.claim(0,10);q.fail("a","one",0);
+  expect(q.get("a").availableAt).toBe(10);expect(q.claim(9,10)).toBeNull();
+  expect(q.claim(10,10).attempts).toBe(2);q.fail("a","two",10);expect(q.get("a").availableAt).toBe(30);
+  expect(q.claim(30,10).attempts).toBe(3);q.fail("a","three",30);expect(q.get("a").availableAt).toBe(55);
+  q.claim(55,10);q.fail("a","four",55);expect(q.get("a").status).toBe("failed");
+  expect(q.get("a").leaseUntil).toBeNull();expect(q.get("a").lastError).toBe("four");expect(q.claim(999,10)).toBeNull();
+});
+test("claim automatically recovers expired leases including exact boundary",()=>{
+  const q=create();enqueue(q);q.claim(0,10);expect(q.claim(9,10)).toBeNull();
+  const claimed=q.claim(10,10);expect(claimed.id).toBe("a");expect(claimed.attempts).toBe(2);
+  expect(claimed.lastError).toBe("Lease expired");
+});
+test("exhausted leases fail; recoverExpired preserves other states",()=>{
+  const q=create();enqueue(q,"last",{maxAttempts:1});enqueue(q,"later");
+  q.claim(0,10);q.recoverExpired(10);expect(q.get("last").status).toBe("failed");
+  expect(q.get("last").attempts).toBe(1);expect(q.get("last").leaseUntil).toBeNull();expect(q.get("later").status).toBe("queued");
+});
+test("cancellation does not rewrite terminal states",()=>{
+  const q=create();enqueue(q,"queued");enqueue(q,"running");
+  q.cancel("queued");q.claim(0,10);q.cancel("running");q.recoverExpired(99);
+  expect(q.get("running").leaseUntil).toBeNull();expect(q.claim(99,10)).toBeNull();
+  enqueue(q,"done");q.claim(99,10);q.complete("done");q.cancel("done");expect(q.get("done").status).toBe("succeeded");
+  enqueue(q,"failed",{maxAttempts:1});q.claim(99,10);q.fail("failed","failure",99);q.cancel("failed");expect(q.get("failed").status).toBe("failed");
+});
+test("duplicate ids and invalid transitions leave state unchanged",()=>{
+  const q=create();enqueue(q);const before=q.snapshot();
+  expect(()=>enqueue(q)).toThrow();expect(()=>q.complete("a")).toThrow();expect(()=>q.fail("a","x",0)).toThrow();
+  for(const method of [()=>q.complete("missing"),()=>q.cancel("missing"),()=>q.fail("missing","x",0)])expect(method).toThrow();
+  expect(q.snapshot()).toEqual(before);
+});
+test("all public job and snapshot surfaces are deep copies",()=>{
+  const q=create();const input={id:"a",payload:{nested:{value:1}}};const returned=q.enqueue(input,0);
+  input.payload.nested.value=2;returned.payload.nested.value=3;
+  q.get("a").payload.nested.value=4;q.list()[0].payload.nested.value=5;
+  const snap=q.snapshot();snap.jobs[0].payload.nested.value=6;snap.options.baseDelayMs=999;
+  expect(q.get("a").payload).toEqual({nested:{value:1}});expect(q.snapshot().options.baseDelayMs).toBe(10);
+  const claimed=q.claim(0,10);claimed.payload.nested.value=7;expect(q.get("a").payload.nested.value).toBe(1);
+});
+test.each([0,-1,1.5,Infinity,NaN])("invalid maxAttempts %s rejected",value=>{const q=create();expect(()=>enqueue(q,"a",{maxAttempts:value})).toThrow();expect(q.list()).toEqual([]);});
+test.each([NaN,Infinity,-1])("invalid time %s rejected before mutation",value=>{
+  const q=create();expect(()=>q.enqueue({id:"a",payload:{}},value)).toThrow();enqueue(q);q.claim(0,10);const before=q.snapshot();
+  expect(()=>q.fail("a","x",value)).toThrow();expect(()=>q.recoverExpired(value)).toThrow();expect(()=>q.claim(value,10)).toThrow();expect(q.snapshot()).toEqual(before);
+});
+test.each([0,-1,NaN,Infinity])("invalid lease %s rejected",value=>{const q=create();enqueue(q);expect(()=>q.claim(0,value)).toThrow();expect(q.get("a").attempts).toBe(0);});
+test.each(["", " ", 7, null])("invalid id %s rejected",id=>{expect(()=>enqueue(create(),id)).toThrow();});
+test.each([0.5,NaN,Infinity])("invalid priority %s rejected",priority=>{expect(()=>enqueue(create(),"a",{priority})).toThrow();});
+test.each([0,-1,NaN,Infinity])("invalid retry/constructor parameters %s",value=>{
+  expect(()=>retryDelay(value,10,100)).toThrow();expect(()=>retryDelay(1,value,100)).toThrow();expect(()=>retryDelay(1,10,value)).toThrow();
+  expect(()=>new JobQueue({baseDelayMs:value})).toThrow();expect(()=>new JobQueue({maxDelayMs:value})).toThrow();
+});
+test("large retry attempts saturate, even with very small base",()=>{
+  expect(retryDelay(1,10,25)).toBe(10);expect(retryDelay(2,10,25)).toBe(20);expect(retryDelay(3,10,25)).toBe(25);
+  expect(retryDelay(100000,10,25)).toBe(25);expect(retryDelay(100000,Number.MIN_VALUE,1)).toBe(1);expect(()=>retryDelay(1.5,10,25)).toThrow();
+  expect(retryDelay(1071,Number.MIN_VALUE,1)).toBe(0.0625);
+});
+test("payloads must be JSON-safe",()=>{
+  for(const payload of [undefined,()=>{},NaN,Infinity,{a:undefined},new Date(),BigInt(1)])expect(()=>enqueue(create(),"a",{payload})).toThrow();
+  const cyclic:any={};cyclic.self=cyclic;expect(()=>enqueue(create(),"a",{payload:cyclic})).toThrow();
+  for(const payload of [null,"text",42,true,[1,{a:false}],{nested:{value:1}}])expect(enqueue(create(),"a",{payload}).payload).toEqual(payload);
+});
+test("restore handles active, exhausted, delayed, and terminal jobs",()=>{
+  const q=create();enqueue(q,"running",{priority:5});enqueue(q,"exhausted",{priority:4,maxAttempts:1});enqueue(q,"delayed",{priority:3});enqueue(q,"cancelled");
+  q.claim(0,1000);q.claim(0,1000);q.claim(0,10);q.fail("delayed","retry",0);q.cancel("cancelled");
+  const snap=q.snapshot();const before=structuredClone(snap);const r=JobQueue.restore(snap,5);
+  expect(snap).toEqual(before);expect(r.get("running")).toMatchObject({status:"queued",attempts:1,availableAt:5,leaseUntil:null,lastError:"Interrupted by restore"});
+  expect(r.get("exhausted")).toMatchObject({status:"failed",attempts:1,leaseUntil:null,lastError:"Interrupted by restore"});
+  expect(r.get("delayed").availableAt).toBe(10);expect(r.get("cancelled").status).toBe("cancelled");
+  snap.jobs[0].payload.nested.value=99;expect(r.get("running").payload.nested.value).toBe(1);
+  expect(r.enqueue({id:"new",payload:{}},5).sequence).toBe(4);expect(r.snapshot().options).toEqual({baseDelayMs:10,maxDelayMs:25});
+});
+test.each([
+  ["version",(s:any)=>{s.version=2;}], ["options",(s:any)=>{s.options.baseDelayMs=0;}],
+  ["jobs",(s:any)=>{s.jobs={};}], ["duplicate ids",(s:any)=>{s.jobs.push({...s.jobs[0],sequence:1});s.nextSequence=2;}],
+  ["duplicate sequence",(s:any)=>{s.jobs.push({...s.jobs[0],id:"b"});}], ["nextSequence",(s:any)=>{s.nextSequence=0;}],
+  ["attempts",(s:any)=>{s.jobs[0].attempts=-1;}], ["overattempts",(s:any)=>{s.jobs[0].attempts=4;}],
+  ["status",(s:any)=>{s.jobs[0].status="unknown";}], ["queued lease",(s:any)=>{s.jobs[0].leaseUntil=10;}],
+  ["running lease",(s:any)=>{s.jobs[0].status="running";s.jobs[0].attempts=1;}],
+  ["failed attempts",(s:any)=>{s.jobs[0].status="failed";s.jobs[0].attempts=1;}],
+  ["queued exhausted",(s:any)=>{s.jobs[0].attempts=3;}], ["error",(s:any)=>{s.jobs[0].lastError=42;}],
+  ["time",(s:any)=>{s.jobs[0].availableAt=Infinity;}], ["priority",(s:any)=>{s.jobs[0].priority=0.5;}],
+  ["sequence",(s:any)=>{s.jobs[0].sequence=-1;}], ["id",(s:any)=>{s.jobs[0].id="";}],
+  ["payload",(s:any)=>{s.jobs[0].payload={a:undefined};}], ["maxAttempts",(s:any)=>{s.jobs[0].maxAttempts=0;}],
+])("malformed snapshot: %s",(_name,mutate:any)=>{const s=snapshot();mutate(s);expect(()=>JobQueue.restore(s,5)).toThrow();});

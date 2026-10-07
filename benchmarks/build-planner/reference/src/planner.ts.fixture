@@ -1,0 +1,22 @@
+import type { Task, BuildPlan } from "./types.ts";
+import { validateTasks, requireIds, topologicalLayers } from "./graph.ts";
+import { affectedTasks } from "./impact.ts";
+
+export class BuildPlanner {
+  private tasks: Task[];
+  constructor(tasks: Task[]) { this.tasks = validateTasks(tasks); }
+  list(): Task[] { return this.tasks.map(task=>({id:task.id,deps:[...task.deps]})); }
+  replace(tasks: Task[]): void { this.tasks = validateTasks(tasks); }
+  plan(targets?: string[], changed?: string[]): BuildPlan {
+    const roots = targets === undefined ? this.tasks.map(task=>task.id) : requireIds(targets,this.tasks);
+    const affected = changed === undefined ? undefined : new Set(affectedTasks(this.tasks,changed));
+    const byId = new Map(this.tasks.map(task=>[task.id,task]));
+    const closure = new Set(roots), work = [...roots];
+    for (let i=0;i<work.length;i++) for (const dep of byId.get(work[i]!)!.deps) {
+      if (!closure.has(dep)) { closure.add(dep); work.push(dep); }
+    }
+    const selected = [...closure].filter(id=>affected === undefined || affected.has(id));
+    const layers = topologicalLayers(this.tasks,selected);
+    return {order:layers.flat(),layers,skipped:[...closure].filter(id=>affected !== undefined && !affected.has(id)).sort()};
+  }
+}

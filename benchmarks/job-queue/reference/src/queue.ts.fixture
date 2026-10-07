@@ -1,0 +1,39 @@
+import type {Job,NewJob,Options,QueueSnapshot} from "./types.ts";
+import {retryDelay} from "./retry.ts";
+import {clone,decodeSnapshot,options as validateOptions,payload,time} from "./snapshot.ts";
+export class JobQueue {
+  private jobs:Job[]=[];
+  private nextSequence=0;
+  private options:Options;
+  constructor(options:Partial<Options>={}) {this.options={baseDelayMs:100,maxDelayMs:10000,...options};validateOptions(this.options);}
+  enqueue(input:NewJob,now:number):Job {
+    time(now);
+    if(!input||typeof input.id!=="string"||!input.id.trim()||this.get(input.id))throw new Error("Invalid or duplicate id");
+    const priority=input.priority??0,maxAttempts=input.maxAttempts??3;
+    if(!Number.isInteger(priority)||!Number.isInteger(maxAttempts)||maxAttempts<1)throw new Error("Invalid job options");payload(input.payload);
+    const job:Job={id:input.id,payload:clone(input.payload),priority,maxAttempts,attempts:0,sequence:this.nextSequence++,status:"queued",createdAt:now,availableAt:now,leaseUntil:null,lastError:null};
+    this.jobs.push(job);return clone(job);
+  }
+  claim(now:number,leaseMs:number):Job|null {
+    time(now);if(!Number.isFinite(leaseMs)||leaseMs<=0||!Number.isFinite(now+leaseMs))throw new Error("Invalid lease");
+    this.recoverExpired(now);
+    const job=this.jobs.filter(j=>j.status==="queued"&&j.availableAt<=now).sort((a,b)=>b.priority-a.priority||a.sequence-b.sequence)[0];
+    if(!job)return null;job.attempts++;job.status="running";job.leaseUntil=now+leaseMs;return clone(job);
+  }
+  private find(id:string):Job {const j=this.jobs.find(j=>j.id===id);if(!j)throw new Error("Unknown job");return j;}
+  private running(id:string):Job {const j=this.find(id);if(j.status!=="running")throw new Error("Job is not running");return j;}
+  complete(id:string):void {const j=this.running(id);j.status="succeeded";j.leaseUntil=null;}
+  fail(id:string,error:string,now:number):void {
+    time(now);const j=this.running(id);if(typeof error!=="string")throw new Error("Invalid error");
+    const next=now+retryDelay(j.attempts,this.options.baseDelayMs,this.options.maxDelayMs);if(!Number.isFinite(next))throw new Error("Invalid retry time");
+    j.status=j.attempts>=j.maxAttempts?"failed":"queued";if(j.status==="queued")j.availableAt=next;j.lastError=error;j.leaseUntil=null;
+  }
+  recoverExpired(now:number):void {
+    time(now);for(const j of this.jobs)if(j.status==="running"&&j.leaseUntil!<=now){j.status=j.attempts<j.maxAttempts?"queued":"failed";if(j.status==="queued")j.availableAt=now;j.leaseUntil=null;j.lastError="Lease expired";}
+  }
+  cancel(id:string):void {const j=this.find(id);if(j.status==="queued"||j.status==="running"){j.status="cancelled";j.leaseUntil=null;}}
+  get(id:string):Job|undefined {const j=this.jobs.find(j=>j.id===id);return j?clone(j):undefined;}
+  list():Job[] {return clone(this.jobs);}
+  snapshot():QueueSnapshot {return clone({version:1,options:this.options,jobs:this.jobs,nextSequence:this.nextSequence});}
+  static restore(value:unknown,now:number):JobQueue {const s=decodeSnapshot(value,now);const q=new JobQueue(s.options);q.jobs=s.jobs;q.nextSequence=s.nextSequence;return q;}
+}

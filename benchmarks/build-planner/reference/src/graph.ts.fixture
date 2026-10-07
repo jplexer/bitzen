@@ -1,0 +1,59 @@
+import type { Task } from "./types.ts";
+
+const idValid = (value: unknown): value is string => typeof value === "string" && value.trim().length > 0;
+
+export function requireIds(value: unknown, tasks: readonly Task[]): string[] {
+  if (!Array.isArray(value)) throw new Error("Ids must be an array");
+  const known = new Set(tasks.map(task => task.id));
+  for (const id of value) if (!idValid(id) || !known.has(id)) throw new Error("Invalid or unknown id");
+  return [...new Set(value)].sort();
+}
+
+function waves(tasks: readonly Task[], selected: string[]): string[][] {
+  const ids = new Set(selected);
+  const counts = new Map<string, number>();
+  const dependents = new Map<string, string[]>();
+  for (const id of ids) dependents.set(id, []);
+  for (const task of tasks) if (ids.has(task.id)) {
+    const deps = task.deps.filter(dep => ids.has(dep));
+    counts.set(task.id, deps.length);
+    for (const dep of deps) dependents.get(dep)!.push(task.id);
+  }
+  let ready = [...ids].filter(id => counts.get(id) === 0).sort();
+  const layers: string[][] = [];
+  let visited = 0;
+  while (ready.length) {
+    layers.push(ready); visited += ready.length;
+    const next: string[] = [];
+    for (const id of ready) for (const child of dependents.get(id)!) {
+      const count = counts.get(child)! - 1; counts.set(child,count);
+      if (count === 0) next.push(child);
+    }
+    ready = next.sort();
+  }
+  if (visited !== ids.size) throw new Error("Dependency cycle");
+  return layers;
+}
+
+export function validateTasks(value: unknown): Task[] {
+  if (!Array.isArray(value)) throw new Error("Tasks must be an array");
+  const tasks: Task[] = [], known = new Set<string>();
+  for (const task of value) {
+    if (!task || typeof task !== "object" || Array.isArray(task) || !idValid(task.id) || !Array.isArray(task.deps)) throw new Error("Invalid task");
+    if (known.has(task.id)) throw new Error("Duplicate task"); known.add(task.id);
+    const deps: string[] = [];
+    for (const dep of task.deps) {
+      if (!idValid(dep) || dep === task.id || deps.includes(dep)) throw new Error(dep === task.id ? "Dependency cycle" : "Invalid dependency");
+      deps.push(dep);
+    }
+    tasks.push({id:task.id,deps});
+  }
+  for (const task of tasks) for (const dep of task.deps) if (!known.has(dep)) throw new Error("Unknown dependency");
+  waves(tasks, tasks.map(task => task.id));
+  return tasks;
+}
+
+export function topologicalLayers(tasks: Task[], selected?: string[]): string[][] {
+  const graph = validateTasks(tasks);
+  return waves(graph, selected === undefined ? graph.map(task=>task.id) : requireIds(selected, graph));
+}

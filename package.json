@@ -1,0 +1,23 @@
+{
+  "name": "bitzen",
+  "module": "index.ts",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "bun --no-env-file index.ts",
+    "tui": "bun --no-env-file index.ts tui",
+    "demo": "bun --no-env-file index.ts demo",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^7"
+  },
+  "dependencies": {
+    "@opentui/core": "^0.5.16",
+    "jose": "^6.2.12"
+  }
+}

@@ -1,0 +1,18 @@
+import type { Task, BuildPlan } from "./types.ts";
+import { validateTasks, topologicalLayers } from "./graph.ts";
+import { affectedTasks } from "./impact.ts";
+
+export class BuildPlanner {
+  private tasks: Task[];
+  constructor(tasks: Task[]) { this.tasks = validateTasks(tasks); }
+  list(): Task[] { return this.tasks; }
+  replace(tasks: Task[]): void { this.tasks = tasks; validateTasks(tasks); }
+  plan(targets?: string[], changed?: string[]): BuildPlan {
+    const roots = targets?.length ? targets : this.tasks.map(task => task.id);
+    const closure = new Set(roots);
+    for (const id of roots) for (const dep of this.tasks.find(task => task.id === id)!.deps) closure.add(dep);
+    const selected = changed?.length ? affectedTasks(this.tasks, changed) : [...closure];
+    const layers = topologicalLayers(this.tasks, selected);
+    return { order: layers.flat().reverse(), layers, skipped: this.tasks.filter(task => !selected.includes(task.id)).map(task => task.id) };
+  }
+}

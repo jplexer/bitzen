@@ -1,0 +1,6 @@
+import type { QueueSnapshot } from "./types.ts";
+export function decodeSnapshot(value: unknown, now: number): QueueSnapshot {
+  const snapshot = value as QueueSnapshot;
+  if (snapshot.version !== 1) throw new Error("Unsupported version");
+  return snapshot;
+}

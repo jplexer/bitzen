@@ -1,0 +1,7 @@
+export function retryDelay(attempt: number, base: number, cap: number): number {
+  if (!Number.isInteger(attempt) || attempt < 1 || !Number.isFinite(base) || base <= 0 || !Number.isFinite(cap) || cap <= 0) throw new Error("Invalid retry parameters");
+  let delay = Math.min(base, cap);
+  // At most ~2100 doublings for any finite IEEE-754 values, independent of attempt.
+  for (let i=1;i<attempt && delay<cap;i++) delay=Math.min(cap,delay*2);
+  return delay;
+}

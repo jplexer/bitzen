@@ -1,0 +1,61 @@
+import type { Job, NewJob, Options, QueueSnapshot } from "./types.ts";
+import { retryDelay } from "./retry.ts";
+import { decodeSnapshot } from "./snapshot.ts";
+
+export class JobQueue {
+  private jobs: Job[] = [];
+  private nextSequence = 0;
+  private options: Options;
+
+  constructor(options: Partial<Options> = {}) {
+    this.options = { baseDelayMs: 100, maxDelayMs: 10000, ...options };
+  }
+  enqueue(input: NewJob, now: number): Job {
+    const job: Job = { ...input, priority: input.priority ?? 0, maxAttempts: input.maxAttempts ?? 3,
+      sequence: this.nextSequence++, attempts: 0, status: "queued", createdAt: now,
+      availableAt: now, leaseUntil: null, lastError: null };
+    this.jobs.push(job);
+    return job;
+  }
+  claim(now: number, leaseMs: number): Job | null {
+    const candidates = this.jobs.filter(job => job.status === "queued");
+    candidates.sort((a,b) => a.priority - b.priority || b.sequence - a.sequence);
+    const job = candidates[0];
+    if (!job) return null;
+    job.status = "running";
+    job.attempts++;
+    job.leaseUntil = now + leaseMs;
+    return job;
+  }
+  complete(id: string): void {
+    const job = this.jobs.find(job => job.id === id)!;
+    job.status = "succeeded";
+  }
+  fail(id: string, error: string, now: number): void {
+    const job = this.jobs.find(job => job.id === id)!;
+    job.status = "queued";
+    job.lastError = error;
+    job.availableAt = now + retryDelay(job.attempts, this.options.baseDelayMs, this.options.maxDelayMs);
+  }
+  recoverExpired(now: number): void {
+    for (const job of this.jobs) {
+      if (job.status === "running" && job.leaseUntil! < now) {
+        job.status = "queued";
+        job.attempts = 0;
+      }
+    }
+  }
+  cancel(id: string): void {
+    this.jobs.find(job => job.id === id)!.status = "cancelled";
+  }
+  get(id: string): Job | undefined { return this.jobs.find(job => job.id === id); }
+  list(): Job[] { return this.jobs; }
+  snapshot(): QueueSnapshot { return { version: 1, options: this.options, jobs: this.jobs, nextSequence: this.nextSequence }; }
+  static restore(value: unknown, now: number): JobQueue {
+    const snapshot = decodeSnapshot(value, now);
+    const queue = new JobQueue(snapshot.options);
+    queue.jobs = snapshot.jobs;
+    queue.nextSequence = 0;
+    return queue;
+  }
+}

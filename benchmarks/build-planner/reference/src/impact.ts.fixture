@@ -1,0 +1,13 @@
+import type { Task } from "./types.ts";
+import { validateTasks, requireIds } from "./graph.ts";
+
+export function affectedTasks(tasks: Task[], changed: string[]): string[] {
+  const graph = validateTasks(tasks), roots = requireIds(changed, graph);
+  const reverse = new Map(graph.map(task => [task.id, [] as string[]]));
+  for (const task of graph) for (const dep of task.deps) reverse.get(dep)!.push(task.id);
+  const affected = new Set(roots), work = [...roots];
+  for (let i=0;i<work.length;i++) for (const child of reverse.get(work[i]!)!) {
+    if (!affected.has(child)) { affected.add(child); work.push(child); }
+  }
+  return [...affected].sort();
+}

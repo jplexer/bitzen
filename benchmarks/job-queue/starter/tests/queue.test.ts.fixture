@@ -1,0 +1,47 @@
+import { expect, test } from "bun:test";
+import { JobQueue } from "../src/queue.ts";
+import { retryDelay } from "../src/retry.ts";
+
+test("highest priority first, FIFO on ties", () => {
+  const queue = new JobQueue();
+  queue.enqueue({id:"low",payload:{},priority:1},0);
+  queue.enqueue({id:"first",payload:{},priority:10},0);
+  queue.enqueue({id:"second",payload:{},priority:10},0);
+  expect(queue.claim(0,50)?.id).toBe("first");
+  expect(queue.claim(0,50)?.id).toBe("second");
+});
+test("retry delay doubles and is capped", () => {
+  expect([1,2,3,4].map(attempt=>retryDelay(attempt,100,500))).toEqual([100,200,400,500]);
+});
+test("retry eligibility is respected", () => {
+  const queue = new JobQueue();
+  queue.enqueue({id:"a",payload:{}},0);
+  queue.claim(0,10);
+  queue.fail("a","temporary",5);
+  expect(queue.claim(104,10)).toBeNull();
+  expect(queue.claim(105,10)?.attempts).toBe(2);
+});
+test("completion clears lease", () => {
+  const queue = new JobQueue();
+  queue.enqueue({id:"a",payload:{}},0);
+  queue.claim(0,10);
+  queue.complete("a");
+  expect(queue.get("a")?.status).toBe("succeeded");
+  expect(queue.get("a")?.leaseUntil).toBeNull();
+});
+test("payload ownership is isolated", () => {
+  const queue = new JobQueue();
+  const payload = {nested:{count:1}};
+  queue.enqueue({id:"a",payload},0);
+  payload.nested.count=99;
+  expect(queue.get("a")?.payload).toEqual({nested:{count:1}});
+});
+test("restore requeues interrupted work without losing attempts", () => {
+  const queue = new JobQueue();
+  queue.enqueue({id:"a",payload:{}},0);
+  queue.claim(0,100);
+  const restored = JobQueue.restore(queue.snapshot(),20);
+  expect(restored.get("a")?.status).toBe("queued");
+  expect(restored.get("a")?.attempts).toBe(1);
+  expect(restored.claim(20,10)?.attempts).toBe(2);
+});

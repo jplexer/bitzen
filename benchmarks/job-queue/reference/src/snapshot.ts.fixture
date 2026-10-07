@@ -1,0 +1,36 @@
+import type { Job, Options, QueueSnapshot } from "./types.ts";
+export function time(value: number): void { if (!Number.isFinite(value)||value<0) throw new Error("Invalid time"); }
+export function options(value: Options): void { for(const n of [value.baseDelayMs,value.maxDelayMs]) if(typeof n!=="number"||!Number.isFinite(n)||n<=0)throw new Error("Invalid options"); }
+export function payload(value: unknown, seen=new Set<object>()): void {
+  if(value===null||typeof value==="string"||typeof value==="boolean")return;
+  if(typeof value==="number"&&Number.isFinite(value))return;
+  if(typeof value!=="object"||!value||seen.has(value))throw new Error("Invalid JSON payload");
+  if(!Array.isArray(value)&&![Object.prototype,null].includes(Object.getPrototypeOf(value)))throw new Error("Invalid JSON object");
+  seen.add(value);for(const entry of Array.isArray(value)?value:Object.values(value))payload(entry,seen);seen.delete(value);
+}
+export function clone<T>(value:T):T { return structuredClone(value); }
+function integer(value:unknown,min:number): void { if(typeof value!=="number"||!Number.isInteger(value)||value<min)throw new Error("Invalid integer"); }
+export function decodeSnapshot(value:unknown,now:number):QueueSnapshot {
+  time(now);
+  if(!value||typeof value!=="object"||Array.isArray(value))throw new Error("Invalid snapshot");
+  const s=value as QueueSnapshot;
+  if(s.version!==1||!s.options||!Array.isArray(s.jobs))throw new Error("Invalid snapshot");
+  options(s.options);integer(s.nextSequence,0);
+  const ids=new Set<string>();const sequences=new Set<number>();
+  for(const j of s.jobs) {
+    if(!j||typeof j!=="object"||typeof j.id!=="string"||!j.id.trim()||ids.has(j.id))throw new Error("Invalid id");ids.add(j.id);
+    integer(j.sequence,0);if(sequences.has(j.sequence)||j.sequence>=s.nextSequence)throw new Error("Invalid sequence");sequences.add(j.sequence);
+    if(!Number.isInteger(j.priority))throw new Error("Invalid priority");integer(j.maxAttempts,1);integer(j.attempts,0);
+    if(j.attempts>j.maxAttempts)throw new Error("Invalid attempts");time(j.createdAt);time(j.availableAt);payload(j.payload);
+    if(!["queued","running","succeeded","failed","cancelled"].includes(j.status))throw new Error("Invalid status");
+    if(j.lastError!==null&&typeof j.lastError!=="string")throw new Error("Invalid error");
+    if(j.status==="running") {if(j.leaseUntil===null)throw new Error("Missing lease");time(j.leaseUntil);if(j.attempts<1)throw new Error("Invalid running attempts");}
+    else if(j.leaseUntil!==null)throw new Error("Unexpected lease");
+    if(j.status==="queued"&&j.attempts>=j.maxAttempts)throw new Error("Exhausted queued job");
+    if(["succeeded","failed"].includes(j.status)&&j.attempts<1)throw new Error("Invalid terminal attempts");
+    if(j.status==="failed"&&j.attempts!==j.maxAttempts)throw new Error("Unexhausted failed job");
+  }
+  const result=clone(s);
+  for(const j of result.jobs)if(j.status==="running") {j.status=j.attempts<j.maxAttempts?"queued":"failed";if(j.status==="queued")j.availableAt=now;j.leaseUntil=null;j.lastError="Interrupted by restore";}
+  return result;
+}
