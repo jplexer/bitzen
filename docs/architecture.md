@@ -18,8 +18,8 @@ Crewmate makes no model calls. In `single` mode, only the Captain is created.
 After a successful `apply_patch`, the first proposed final answer becomes a draft.
 The Captain receives one focused contract-review prompt to inspect requirements,
 edge cases, exact output wording, and verification evidence. It can correct gaps
-before finishing. Read-only tasks skip this pass. Review uses the same call, turn,
-and cost limits and costs at least one additional Captain call.
+before finishing. Read-only tasks skip this pass. Review uses the same call and
+cost limits and costs at least one additional Captain call.
 
 The review is a prompt-driven check, not an independent correctness verdict.
 Shell-only edits do not trigger the automatic `apply_patch` review.
@@ -63,7 +63,11 @@ Every task writes `<project>/.bitzen/runs/<id>/`:
 - `sessions.json`: separate Captain (`lead`) and Crewmate (`sidekick`) histories.
 - `summary.json`: status, final report, elapsed time, delegation count, and usage.
 
-`/runs` can replay saved traces for viewing; resuming a task is not implemented.
+`/resume` opens saved traces and prepares the selected run for a continuation
+message. The harness restores agent histories into a new trace, preserving the
+original. Unresolved tool calls receive an interrupted/unknown-outcome result
+instead of being re-executed. Current models, shell permissions, and fresh usage
+limits apply; the saved workspace must match the current workspace.
 Traces can contain source code, task text, model responses, and command output.
 Add `.bitzen/` to target projects' ignore rules. Login secrets are kept out of
 prompts and traces, but source and command output can contain other sensitive data.

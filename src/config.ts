@@ -6,7 +6,6 @@ export interface Config {
   lead: ModelSelection;
   sidekick: ModelSelection;
   maxCalls: number;
-  maxTurns: number;
   maxOutputTokens: number;
   maxCostUsd?: number;
 }
@@ -27,7 +26,6 @@ export async function loadConfig(path?: string, overrides: { lead?: string; side
     lead,
     sidekick,
     maxCalls: positive(overrides.maxCalls ?? raw.maxCalls ?? 40, "maxCalls", true),
-    maxTurns: positive(raw.maxTurns ?? 20, "maxTurns", true),
     maxOutputTokens: positive(overrides.maxOutputTokens ?? raw.maxOutputTokens ?? 8192, "maxOutputTokens", true),
     ...(maxCost === undefined ? {} : { maxCostUsd: positive(maxCost, "maxCostUsd") }),
   };

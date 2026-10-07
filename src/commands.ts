@@ -11,7 +11,7 @@ export const commands = [
   {name:"clear",description:"Clear the current task view"},
   {name:"status",description:"Show account, models, and settings"},
   {name:"cost",description:"Show this task's cost and calls"},
-  {name:"runs",description:"Browse saved runs"},
+  {name:"resume",description:"Resume a saved run"},
   {name:"details",description:"Toggle reasoning and tool details"},
   {name:"cancel",description:"Cancel the active task"},
   {name:"quit",description:"Exit Bitzen"},

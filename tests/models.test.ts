@@ -35,7 +35,7 @@ test("catalogue failures redact credentials and malformed responses fail clearly
 });
 
 test("model choices retain configured IDs, merge metadata, and search across providers",()=>{
-  const config={lead:{provider:"test",model:"old"},sidekick:{provider:"other",model:"cheap"},maxCalls:10,maxTurns:10,maxOutputTokens:1000};
+  const config={lead:{provider:"test",model:"old"},sidekick:{provider:"other",model:"cheap"},maxCalls:10,maxOutputTokens:1000};
   const choices=modelChoices(config,[{id:"cheap",name:"Worker Small",provider:"other"},{id:"large",name:"Reasoner Large",provider:"test"},{id:"large",name:"Other Large",provider:"other"}],"sidekick");
   expect(choices[0]?.name).toBe("Worker Small");expect(choices).toHaveLength(4);
   expect(matchingModels({role:"lead",choices,query:"test reasoner",index:0,loading:false,error:""}).map(model=>model.id)).toEqual(["large"]);

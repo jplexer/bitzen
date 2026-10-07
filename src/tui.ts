@@ -85,7 +85,7 @@ export function mountTui(renderer: CliRenderer, options: TuiOptions) {
   const selection = (value: Selection) => {if (!value.isDragging) copySelection(value.getSelectedText());};
   const submit = () => {
     if (closing || !state.input.trim()) return;
-    const task = state.input.trim(), mode = state.mode;
+    const task = state.input.trim(), mode = state.mode, resumeDirectory = state.resumeDirectory;
     if (task.startsWith("/") && !task.includes("\n")) { executeCommand(task); return; }
     if(pending){state.notice="A task is running. Use /cancel or wait before starting another.";refresh();return;}
     if (options.accounts) {
@@ -94,17 +94,21 @@ export function mountTui(renderer: CliRenderer, options: TuiOptions) {
     }
     if(!config.lead.model || mode==="crew"&&!config.sidekick.model){state.notice="Choose a model before starting this task.";openModels(!config.lead.model?"lead":"sidekick");return;}
     const runConfig = structuredClone(config);
+    // A continuation starts a new trace, not a new visible conversation.
+    const historyEntries = resumeDirectory ? state.entries : [];
     const accountStatus=state.accountStatus;state = new TuiState(); state.mode = mode;state.accountStatus=accountStatus; state.task = task; state.status = "Running"; state.started = Date.now();
+    state.entries = [...historyEntries]; state.resumeDirectory = resumeDirectory;
     view.setDraft(""); view.focusInput(); refresh();
     active = new AbortController();
     pending = (async () => {
       try {
-        const result = await runHarness({ ...options, config: runConfig, allowShell:shellAllowed, task, mode, signal: active!.signal, onEvent: event => { state.receive(event); refresh(); } });
+        const result = await runHarness({ ...options, config: runConfig, allowShell:shellAllowed, task, mode, resumeDirectory, signal: active!.signal, onEvent: event => { state.receive(event); refresh(); } });
         state.traceDirectory = result.traceDirectory;
+        state.resumeDirectory = result.traceDirectory;
       } catch (error) {
         state.status = "Failed";
         state.notice = error instanceof Error ? error.message : "Task failed.";
-        if (error instanceof HarnessRunError) { state.usage = error.usage; state.traceDirectory = error.traceDirectory; }
+        if (error instanceof HarnessRunError) { state.usage = error.usage; state.traceDirectory = error.traceDirectory; state.resumeDirectory = error.traceDirectory; }
       } finally {
         pending = undefined; active = undefined; if (!closing) view.focusInput(); refresh();
         if (closing && !authPending) finish();
@@ -168,6 +172,7 @@ export function mountTui(renderer: CliRenderer, options: TuiOptions) {
   };
   const closeModal = () => { if(state.modal==="login"){authController?.abort();loginSecret="";if(state.login)state.login.keyLength=0;} state.modal = undefined; if (!pending) view.focusInput(); else view.focusFeed(); };
   const history = async () => {
+    if (pending) { state.notice = "Finish or cancel the current task before resuming a run."; refresh(); return; }
     if (loadingHistory) return;
     loadingHistory = true; state.modal = "runs"; const target = state;
     try { const runs = await savedRuns(options.cwd); if (state === target) { state.runs = runs; state.selectedRun = 0; } }
@@ -182,8 +187,13 @@ export function mountTui(renderer: CliRenderer, options: TuiOptions) {
       const events = await readRun(run);
       if (state !== target || pending || closing) return;
       reset(); for (const event of events) state.receive(event);
-      state.traceDirectory = run.directory; state.notice = "Saved run replay · Ctrl+N for a new task";
-      view.focusFeed();
+      state.traceDirectory = run.directory; state.resumeDirectory = run.directory;
+      state.notice = "Saved run ready · Type a continuation and press Enter · Ctrl+N starts fresh";
+      view.focusInput();
+      refresh();
+      // Re-engage bottom following after the picker/reset, before layout grows
+      // to the replayed history. Later drafts leave manual scrolling untouched.
+      view.feed.scrollTo(view.feed.scrollHeight);
     } catch (error) { state.notice = String(error); }
     refresh();
   };
@@ -267,7 +277,7 @@ export function mountTui(renderer: CliRenderer, options: TuiOptions) {
         state.notice=`Mode: ${state.mode}`;break;
       }
       case "details":if(noArgs())state.expanded=!state.expanded;break;
-      case "runs":if(noArgs())void history();break;
+      case "resume":if(noArgs())void history();break;
       case "cost":if(noArgs())commandReply("Task cost",formatRunSummary({usage:state.usage,traceDirectory:state.traceDirectory||"No task yet"}));break;
       case "status":if(noArgs())commandReply("Session status",`${state.accountStatus||"Provider managed externally"}\nCaptain: ${config.lead.model||"Not selected"}\nCrewmate: ${config.sidekick.model||"Not selected"}\nMode: ${state.mode} · Shell: ${shellAllowed?"enabled":"disabled"}`);break;
       case "login":if(args.length>1)state.notice="Use /login [provider].";else openLogin(args[0]);break;

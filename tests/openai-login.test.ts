@@ -166,7 +166,7 @@ test("native TUI selects ChatGPT login, discovers both models and preserves a su
   let routerCatalogCalls=0;
   f.accounts.register({id:"openrouter",label:"OpenRouter",browser:async()=>"unused",validateKey:async()=>{}});
   const providers=new ProviderRegistry().register({id:"openrouter",complete:async()=>{throw Error("No inference");},listModels:async()=>{routerCatalogCalls++;return [];}}).register(new OpenAI(f.accounts.credentials("openai"),f.transport));
-  const config={lead:{provider:"openrouter",model:""},sidekick:{provider:"openrouter",model:""},maxCalls:10,maxTurns:10,maxOutputTokens:1000};
+  const config={lead:{provider:"openrouter",model:""},sidekick:{provider:"openrouter",model:""},maxCalls:10,maxOutputTokens:1000};
   const app=mountTui(setup.renderer,{cwd:f.root,config,providers,mode:"crew",accounts:f.accounts,initialTask:"Keep this task",taskFile:"/tmp/TASK.md",allowShell:false,signal:new AbortController().signal});
   try {
     await setup.waitFor(()=>app.state.modal==="login",{maxPasses:10000});setup.mockInput.pressArrow("right");await setup.flush();

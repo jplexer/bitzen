@@ -62,7 +62,7 @@ export async function runDemo(signal: AbortSignal) {
   await Bun.write(join(cwd, "add.test.ts"), demoTests);
   const result = await runHarness({
     cwd, task: "Fix add() so it adds numbers correctly.", mode: "crew", allowShell: true, signal,
-    config: { lead: { provider: "demo", model: "lead" }, sidekick: { provider: "demo", model: "sidekick" }, maxCalls: 12, maxTurns: 8, maxOutputTokens: 1024 },
+    config: { lead: { provider: "demo", model: "lead" }, sidekick: { provider: "demo", model: "sidekick" }, maxCalls: 12, maxOutputTokens: 1024 },
     providers: new ProviderRegistry().register(new DemoProvider()),
   });
   if (await Bun.file(join(cwd, "add.ts")).text() !== demoSource.replace("a - b", "a + b")) throw new Error("Demo did not apply the expected fix.");

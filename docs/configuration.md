@@ -17,7 +17,6 @@ The internal keys `lead` and `sidekick` correspond to Captain and Crewmate:
   "lead": { "provider": "openrouter", "model": "vendor/your-captain-model" },
   "sidekick": { "provider": "openrouter", "model": "vendor/your-crewmate-model" },
   "maxCalls": 40,
-  "maxTurns": 20,
   "maxOutputTokens": 8192
 }
 ```
@@ -34,9 +33,11 @@ model ID without changing that role's provider.
 | Setting | CLI flag | Default | Scope |
 | --- | --- | --- | --- |
 | `maxCalls` | `--max-calls` | 40 | Shared across both agents |
-| `maxTurns` | Set in config | 20 | Each agent invocation, including delegated briefs |
 | `maxOutputTokens` | `--max-output-tokens` | 8192 | Initial allowance per supported model call |
 | `maxCostUsd` | `--max-cost` | None | Stops new requests after the reported-cost cutoff |
+
+Agents have no separate turn limit. They continue until they finish, are cancelled,
+or reach the shared call limit or an optional cost cutoff.
 
 If a response ends because of its output limit, Bitzen discards incomplete tools
 and retries at most twice with a doubled allowance, up to 65,536 tokens (or the

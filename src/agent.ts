@@ -13,24 +13,26 @@ export interface AgentOptions {
   budget: Budget;
   trace: EventSink;
   sessionId: string;
-  maxTurns: number;
   maxOutputTokens: number;
   checkpoint?: () => Promise<void>;
+  history?: Message[];
   validateCompletion?: (report: string) => string | { reason: string; category: "review" } | undefined;
 }
 
 export class Agent {
   readonly messages: Message[];
   constructor(private readonly options: AgentOptions) {
-    this.messages = [{ role: "system", content: options.systemPrompt }];
+    this.messages = options.history ? [{ role: "system", content: options.systemPrompt }, ...options.history.filter(message => message.role !== "system")] : [{ role: "system", content: options.systemPrompt }];
   }
 
   async run(task: string, signal: AbortSignal): Promise<string> {
     const o = this.options;
     this.messages.push({ role: "user", content: task });
+    // Persist the task before the first request so a process interruption is resumable.
+    await o.checkpoint?.();
     let maxOutputTokens = o.maxOutputTokens;
     let truncationRetries = 0;
-    for (let turn = 0; turn < o.maxTurns; turn++) {
+    for (let turn = 0; ; turn++) {
       signal.throwIfAborted();
       o.budget.beforeCall(o.name);
       await o.trace.record({ type: "model_start", agent: o.name, selection: o.selection, turn, maxOutputTokens });
@@ -51,7 +53,7 @@ export class Agent {
       await o.trace.record({ type: "model_end", agent: o.name, id: completion.id, usage: completion.usage, finishReason: completion.finishReason, elapsedMs: performance.now() - started, message: completion.message });
       if (completion.finishReason === "length" && truncationRetries < 2) {
         const nextLimit = Math.min(maxOutputTokens * 2, Math.max(o.maxOutputTokens, 65536));
-        if (nextLimit > maxOutputTokens && turn + 1 < o.maxTurns) {
+        if (nextLimit > maxOutputTokens) {
           truncationRetries++;
           maxOutputTokens = nextLimit;
           const reason = `Output truncated; incomplete tool calls were discarded and no tools from that response ran. Retrying with ${maxOutputTokens} output tokens. Keep the response concise and split large file edits into smaller patches.`;
@@ -99,6 +101,5 @@ export class Agent {
         await o.checkpoint?.();
       }
     }
-    throw new Error(`${roleLabel(o.name)} reached its turn limit (${o.maxTurns}).`);
   }
 }

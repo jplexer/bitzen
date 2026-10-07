@@ -1,4 +1,7 @@
 import { realpath } from "node:fs/promises";
+import { isAbsolute, relative, resolve } from "node:path";
+import type { Message } from "./providers/types.ts";
+import { readRun, type SavedRun } from "./history.ts";
 import { Agent } from "./agent.ts";
 import { Budget, type BudgetSnapshot } from "./budget.ts";
 import type { Config } from "./config.ts";
@@ -16,6 +19,7 @@ export interface RunOptions {
   providers: ProviderRegistry;
   signal: AbortSignal;
   onEvent?: (event: Record<string, unknown>) => void;
+  resumeDirectory?: string;
 }
 
 export class HarnessRunError extends Error {
@@ -36,6 +40,41 @@ Only claim tests passed if a run_command result actually proves it. State limita
 
 export async function runHarness(options: RunOptions) {
   const root = await realpath(options.cwd);
+  let resumeSessions: Record<string, Message[]> = {};
+  let sourceRun: Record<string, unknown> | undefined;
+  if (options.resumeDirectory !== undefined) {
+    if (typeof options.resumeDirectory !== "string" || !options.resumeDirectory.trim()) throw new Error("Resume directory must be a non-empty path.");
+    const directory = await realpath(resolve(options.resumeDirectory));
+    const rel = relative(root, directory);
+    if (rel === ".." || rel.startsWith("../") || isAbsolute(rel)) throw new Error("Resume trace must be within the current workspace.");
+    const saved: SavedRun = { key: directory, mode: "single", id: directory.split(/[\\/]/).pop()!, directory, status: "unknown", cost: null };
+    const events = await readRun(saved);
+    sourceRun = events.find(event => event.type === "run_start");
+    if (!sourceRun || sourceRun.cwd !== root) throw new Error("Resume trace has invalid run metadata or belongs to a different workspace.");
+    const sessionsPath = await realpath(resolve(directory, "sessions.json")).catch(() => "");
+    if (relative(directory, sessionsPath) !== "sessions.json") throw new Error("Resume trace has invalid or missing sessions.json.");
+    const sessionsFile = Bun.file(sessionsPath);
+    if (sessionsFile.size > 30_000_000) throw new Error("Session history exceeds the 30 MB resume limit.");
+    const raw = await sessionsFile.json().catch(() => null);
+    if (!Array.isArray(raw)) throw new Error("Resume trace has invalid or missing sessions.json.");
+    for (const session of raw) {
+      if (!session || !["lead", "sidekick"].includes(session.agent) || resumeSessions[session.agent] || !Array.isArray(session.messages) || !session.messages.length || session.messages.some((m: any) => {
+        if (!m || !["system", "user", "assistant", "tool"].includes(m.role)) return true;
+        if (m.role === "assistant") return !(m.content === null || typeof m.content === "string") || !Array.isArray(m.toolCalls) || m.toolCalls.some((call: any) => !call || typeof call.id !== "string" || typeof call.name !== "string" || typeof call.arguments !== "string");
+        return typeof m.content !== "string" || (m.role === "tool" && typeof m.callId !== "string");
+      })) throw new Error("Resume trace contains invalid session data.");
+      resumeSessions[session.agent] = session.messages.filter((m: Message) => m.role !== "system");
+    }
+    if (!resumeSessions.lead) throw new Error("Resume trace is missing the lead session.");
+    for (const messages of Object.values(resumeSessions)) {
+      const pending = new Set<string>();
+      for (const message of messages) {
+        if (message.role === "assistant") for (const call of message.toolCalls ?? []) pending.add(call.id);
+        if (message.role === "tool") pending.delete(message.callId);
+      }
+      for (const callId of pending) messages.push({ role: "tool", callId, content: JSON.stringify({ error: "Interrupted by run termination; outcome is unknown. Tool was not re-executed." }) });
+    }
+  }
   // Validate providers before creating a run or making any model request.
   const leadProvider = options.providers.get(options.config.lead.provider);
   const sidekickProvider = options.mode === "crew" ? options.providers.get(options.config.sidekick.provider) : undefined;
@@ -63,7 +102,7 @@ export async function runHarness(options: RunOptions) {
       name, selection: options.config[name], provider: name === "lead" ? leadProvider : sidekickProvider!,
       systemPrompt: `${commonPrompt}\nShell execution is ${options.allowShell ? "enabled" : "disabled"}.\n${systemPrompt}`,
       tools: agentTools, budget, trace: sink, sessionId: `${id}:${name}`,
-      maxTurns: options.config.maxTurns, maxOutputTokens: options.config.maxOutputTokens, checkpoint,
+      maxOutputTokens: options.config.maxOutputTokens, checkpoint, history: resumeSessions[name],
       validateCompletion: name === "lead" ? () => {
         if (!editsMade || finalReviewStarted) return undefined;
         finalReviewStarted = true;
@@ -104,7 +143,7 @@ When code changes, inspect actual changed files and run relevant verification. M
   let report: string | undefined;
   let failure: string | undefined;
   try {
-    await sink.record({ type: "run_start", id, mode: options.mode, cwd: root, task: options.task, config: options.config, allowShell: options.allowShell });
+    await sink.record({ type: "run_start", id, mode: options.mode, cwd: root, task: options.task, config: options.config, allowShell: options.allowShell, ...(options.resumeDirectory ? { resumedFrom: { directory: options.resumeDirectory, id: sourceRun?.id } } : {}) });
     report = await lead.run(options.task, options.signal);
     status = "completed";
     return { id, report, traceDirectory: trace.directory, usage: budget.snapshot() };

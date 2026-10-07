@@ -14,7 +14,7 @@ import { ProfileStore } from "../src/profile.ts";
 import { AccountManager } from "../src/login.ts";
 import { pixelPalette } from "../src/logo.ts";
 
-const config = { lead:{provider:"test",model:"lead"}, sidekick:{provider:"test",model:"worker"}, maxCalls:10, maxTurns:10, maxOutputTokens:1000 };
+const config = { lead:{provider:"test",model:"lead"}, sidekick:{provider:"test",model:"worker"}, maxCalls:10, maxOutputTokens:1000 };
 
 test("mouse selection copies rendered chat; copy shortcuts preserve the draft and Ctrl+C still exits without selection", async () => {
   const setup=await createTestRenderer({exitOnCtrlC:false,width:100,height:32,kittyKeyboard:true});
@@ -143,6 +143,74 @@ test("OpenTUI streams reasoning and collapses long tool results until expanded",
   } finally {view.destroy(); setup.renderer.destroy();}
 });
 
+test("a follow-up keeps long-chat cards and the latest messages in view", async () => {
+  const setup = await createTestRenderer({ exitOnCtrlC: false, width: 100, height: 32 });
+  const view = createTuiView(setup.renderer, config, "/tmp", { submit: () => {}, draft: () => {} });
+  const original = new TuiState();
+  original.status = "Completed";
+  for (let index = 0; index < 40; index++) {
+    original.entries.push({ kind: "user", title: "You", text: `Earlier message ${index}`, detail: "" });
+  }
+  try {
+    view.sync(original);
+    await setup.flush();
+    view.feed.scrollTo(10000);
+    await setup.flush();
+    expect(setup.captureCharFrame()).toContain("Earlier message 39");
+    const firstCard = view.feed.getChildren()[0];
+    // This is the state transition used when submitting a continuation.
+    const continued = new TuiState();
+    continued.entries = [...original.entries];
+    continued.status = "Running";
+    view.setDraft("test");
+    view.sync(continued);
+    await setup.flush();
+    expect(view.feed.getChildren()[0]).toBe(firstCard);
+    expect(setup.captureCharFrame()).toContain("Earlier message 39");
+    continued.receive({ type: "run_start", task: "test", mode: "single" });
+    view.setDraft("");
+    view.sync(continued);
+    await setup.flush();
+    expect(setup.captureCharFrame()).toContain("test");
+    expect(setup.captureCharFrame()).not.toContain("Earlier message 0");
+    view.sync(new TuiState());
+    await setup.flush();
+    expect(view.feed.getChildren()).toHaveLength(0);
+  } finally { view.destroy(); setup.renderer.destroy(); }
+});
+
+test("typing and replacing continuation state preserve a manually scrolled reading position", async () => {
+  const setup = await createTestRenderer({ exitOnCtrlC: false, width: 100, height: 32 });
+  const view = createTuiView(setup.renderer, config, "/tmp", { submit: () => {}, draft: () => {} });
+  const state = new TuiState();
+  state.status = "Completed";
+  for (let index = 0; index < 40; index++) {
+    state.entries.push({ kind: "user", title: "You", text: `Reading position ${index}`, detail: "" });
+  }
+  const visibleMessages = () => setup.captureCharFrame().split("\n").filter(line => line.includes("Reading position"));
+  try {
+    view.sync(state);
+    await setup.flush();
+    view.feed.scrollTo(25);
+    await setup.flush();
+    const before = visibleMessages();
+    expect(before.length).toBeGreaterThan(0);
+    expect(before.some(line => line.includes("Reading position 0"))).toBe(false);
+    view.setDraft("test");
+    state.input = "test";
+    view.sync(state);
+    await setup.flush();
+    expect(visibleMessages()).toEqual(before);
+    const continued = new TuiState();
+    continued.status = "Running";
+    continued.entries = [...state.entries];
+    view.setDraft("");
+    view.sync(continued);
+    await setup.flush();
+    expect(visibleMessages()).toEqual(before);
+  } finally { view.destroy(); setup.renderer.destroy(); }
+});
+
 test("delegation handoff follows sidekick messages and final report is not duplicated",()=>{
   const state=new TuiState();
   state.receive({type:"run_start",task:"Implement",mode:"crew"});
@@ -220,7 +288,7 @@ test("the native TUI submits a task, completes both agents, and replays its save
     expect(setup.captureCharFrame()).toContain("independently reran");
     expect(setup.captureCharFrame()).toContain("bun test successfully.");
     setup.mockInput.pressKey("F3"); await setup.waitFor(()=>app.state.runs.length===1, {maxPasses:10000});
-    setup.mockInput.pressEnter(); await setup.waitFor(()=>app.state.notice.includes("Saved run replay"), {maxPasses:10000});
+    setup.mockInput.pressEnter(); await setup.waitFor(()=>app.state.notice.includes("Saved run ready"), {maxPasses:10000});
     expect(app.state.status).toBe("Completed"); expect(app.state.usage.calls).toBe(9);
     setup.mockInput.pressCtrlC(); await app.finished;
   } finally { app.close(); await app.finished; app.destroy(); setup.renderer.destroy(); await rm(root,{recursive:true,force:true}); }

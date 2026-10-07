@@ -50,7 +50,7 @@ Enter to run. `/help` lists all commands.
 | `/account`, `/account 2`, `/account new` | List, switch, or add ChatGPT accounts |
 | `/usage` | Open ChatGPT usage settings |
 | `/status`, `/cost` | Show session details or task cost |
-| `/runs` | View saved runs |
+| `/resume` | Select a saved run to continue |
 | `/new`, `/cancel`, `/quit` | Start fresh, cancel a task, or exit |
 
 - **Ctrl+P** opens the model picker; Tab switches roles inside it.
@@ -100,8 +100,12 @@ Credentials are stored as private, unencrypted JSON under `~/.config/bitzen/`
 
 Runs are saved in `<project>/.bitzen/runs/` with events, agent histories, and a
 summary. These traces can contain source code and task output; add `.bitzen/` to
-your project's ignore rules. `/runs` replays them for viewing; resuming is not
-implemented.
+your project's ignore rules. `/resume` opens the saved-run picker. Select a run
+with Up/Down and Enter, then type a continuation (such as “Continue”) and press
+Enter. Agent histories are restored into a new run; the original stays intact.
+Current models and shell permissions apply, with fresh cost/call limits. Pending
+tool calls are marked interrupted rather than automatically rerun. Ctrl+N starts
+fresh instead.
 
 ## Development
 

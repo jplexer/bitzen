@@ -35,6 +35,7 @@ export class TuiState {
   started = 0;
   elapsedMs: number | null = null;
   traceDirectory = "";
+  resumeDirectory?: string;
   notice = "";
   entries: Entry[] = [];
   runs: SavedRun[] = [];
@@ -132,7 +133,8 @@ F2 switches Crew/single mode while idle. F3 opens saved runs.
 Ctrl+P or /model opens the model picker. Tab chooses captain/crewmate; type to search.
 Up/Down selects a model; Enter applies it; Escape keeps your current models.
 /model captain ID or /model crewmate ID switches directly. /help shows this help.
-In saved runs: Up/Down selects, Enter replays, Escape returns to chat.
+In saved runs: Up/Down selects, Enter prepares resume, Escape returns to chat.
+After selecting a run, type a continuation and press Enter. Ctrl+N starts fresh.
 F1 or Escape closes help. Escape in chat cancels active work.
 Drag to select text and copy it. Cmd+C or Ctrl+Shift+C copies a selection.
 Ctrl+C copies selected text; with no selection it exits.

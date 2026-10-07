@@ -13,9 +13,53 @@ afterAll(cleanup);
 
 const config: Config = {
   lead: { provider: "test", model: "lead" }, sidekick: { provider: "test", model: "worker" },
-  maxCalls: 12, maxTurns: 8, maxOutputTokens: 1024,
+  maxCalls: 12, maxOutputTokens: 1024,
 };
 const delegate = (objective: string) => completion(null, "delegate", { objective, constraints: ["Keep scope small."], acceptance_criteria: ["Tests pass."] });
+
+test.each(["single","crew"] as const)("%s implementation can exceed 20 turns and still finish its review",async mode=>{
+  const root=await tempRepo();await Bun.write(join(root,"a.txt"),"before");
+  let implementationCalls=0,captainCalls=0;
+  const events:Record<string,any>[]=[];
+  const adapter=provider(async request=>{
+    if(mode==="crew" && request.model==="lead") {
+      if(captainCalls++===0)return delegate("Implement the change");
+      expect(await Bun.file(join(root,"a.txt")).text()).toBe("after");
+      if(captainCalls===2)return completion("Draft report");
+      expect(request.messages.at(-1)?.content).toContain("final contract review");
+      return completion("Reviewed the change");
+    }
+    const step=implementationCalls++;
+    if(step<22)return completion(null,"read_file",{path:"a.txt"});
+    if(step===22)return completion(null,"apply_patch",{path:"a.txt",old_text:"before",new_text:"after"});
+    if(step===23)return completion("Implemented the change");
+    expect(request.messages.at(-1)?.content).toContain("final contract review");
+    return completion("Reviewed the change");
+  });
+  const result=await runHarness({cwd:root,task:"Implement and review the change",mode,allowShell:false,config:{...config,maxCalls:30},providers:new ProviderRegistry().register(adapter),signal:signal(),onEvent:event=>{events.push(event);}});
+  expect(result.report).toBe("Reviewed the change");
+  expect(await Bun.file(join(root,"a.txt")).text()).toBe("after");
+  expect(result.usage.calls).toBe(mode==="crew"?27:25);
+  const implementer=mode==="crew"?"sidekick":"lead";
+  expect(events.filter(event=>event.type==="model_start"&&event.agent===implementer).at(-1)?.turn).toBeGreaterThan(20);
+  expect(events.filter(event=>event.type==="completion_rejected"&&event.category==="review")).toHaveLength(1);
+});
+
+test("long-running tasks still obey the shared call limit and cancellation",async()=>{
+  const root=await tempRepo();await Bun.write(join(root,"a.txt"),"before");
+  let calls=0;
+  const adapter=provider(async()=>{calls++;return completion(null,"read_file",{path:"a.txt"});});
+  const options={cwd:root,task:"Keep investigating",mode:"single" as const,allowShell:false,config:{...config,maxCalls:22},providers:new ProviderRegistry().register(adapter),signal:signal()};
+  await expect(runHarness(options)).rejects.toThrow("Model call limit reached (22)");
+  expect(calls).toBe(22);
+  const controller=new AbortController();calls=0;
+  const cancellable=provider(async()=>{
+    if(++calls===22)controller.abort(new Error("Cancelled by user."));
+    return completion(null,"read_file",{path:"a.txt"});
+  });
+  await expect(runHarness({...options,config:{...config,maxCalls:100},providers:new ProviderRegistry().register(cancellable),signal:controller.signal})).rejects.toThrow("Cancelled by user.");
+  expect(calls).toBe(22);
+});
 
 test("offline demo edits a real fixture, runs tests, and independently reviews", async () => {
   const result = await runDemo(signal());
@@ -180,6 +224,26 @@ test("final review obeys the existing model call limit",async()=>{
   const root=await tempRepo();await Bun.write(join(root,"a.txt"),"before");let calls=0;
   const adapter=provider(async()=>calls++===0?completion(null,"apply_patch",{path:"a.txt",old_text:"before",new_text:"after"}):completion("Draft"));
   await expect(runHarness({cwd:root,task:"Edit a.txt",mode:"single",allowShell:false,config:{...config,maxCalls:2},providers:new ProviderRegistry().register(adapter),signal:signal()})).rejects.toThrow("call limit");
+});
+
+test("resume restores history and marks pending tool calls interrupted without re-execution", async () => {
+  const root = await tempRepo();
+  const original = await runHarness({ cwd: root, task: "First task", mode: "single", allowShell: false, config, providers: new ProviderRegistry().register(provider(async () => completion("Saved answer"))), signal: signal() });
+  const sessions = await Bun.file(join(original.traceDirectory, "sessions.json")).json();
+  sessions[0].messages.push({ role: "assistant", content: null, toolCalls: [{ id: "pending", name: "apply_patch", arguments: "{}" }] });
+  await Bun.write(join(original.traceDirectory, "sessions.json"), JSON.stringify(sessions));
+  let called = false;
+  const resumed = await runHarness({ cwd: root, task: "Continue", mode: "single", allowShell: false, config, providers: new ProviderRegistry().register(provider(async request => {
+    called = true;
+    expect(request.messages.find(message => message.role === "tool" && message.callId === "pending")?.content).toContain("outcome is unknown");
+    expect(request.messages.filter(message => message.role === "system")).toHaveLength(1);
+    expect(JSON.stringify(request.messages)).toContain("Saved answer");
+    expect(request.messages.at(-1)?.content).toBe("Continue");
+    return completion("Continued");
+  })), signal: signal(), resumeDirectory: original.traceDirectory });
+  expect(called).toBe(true);
+  expect(resumed.traceDirectory).not.toBe(original.traceDirectory);
+  expect((await Bun.file(join(original.traceDirectory, "events.jsonl")).text()).length).toBeGreaterThan(0);
 });
 
 test("single mode performs edits without creating a sidekick", async () => {

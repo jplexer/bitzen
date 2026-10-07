@@ -149,7 +149,11 @@ export function createTuiView(renderer: CliRenderer, config: Config, cwd: string
   }
   function sync(state:TuiState) {
     const chatMode = state.modal === "models" || state.modal === "login" ? undefined : state.modal;
-    if(activeState!==state||modal!==chatMode){clear();feed.scrollTo(0);}
+    // Follow-up runs replace accounting state but retain the same chat entries.
+    // Keep their cards and scroll position instead of rebuilding at the top.
+    const continuingChat = activeState !== state && !modal && !chatMode
+      && Boolean(activeState?.entries.length) && activeState?.entries[0] === state.entries[0];
+    if(modal!==chatMode || activeState!==state && !continuingChat){clear();feed.scrollTo(0);}
     activeState=state;modal=chatMode;
     root.paddingX=renderer.width<65?0:1;
     composerBox.height=renderer.height<20?3:Math.min(6,Math.max(3,composer.virtualLineCount+2));
@@ -187,7 +191,7 @@ export function createTuiView(renderer: CliRenderer, config: Config, cwd: string
     if(state.modal==="help")add("help","Keyboard shortcuts",helpText,`Captain: ${config.lead.model}\nCrewmate: ${config.sidekick.model}\nWorkspace: ${cwd}`,colors.muted);
     else if(state.modal==="runs") {
       if(!state.runs.length)add("runs-empty","Saved runs","No saved runs in this directory.","Escape returns to chat.",colors.muted);
-      state.runs.forEach((run,index)=>add(`run-${index}`,`${index===state.selectedRun?"›":" "} ${run.mode} · ${run.status}`,run.id,`${run.cost===null?"unknown cost":"$"+run.cost.toFixed(6)} · Enter to replay`,index===state.selectedRun?colors.worker:colors.muted));
+      state.runs.forEach((run,index)=>add(`run-${index}`,`${index===state.selectedRun?"›":" "} ${run.mode} · ${run.status}`,run.id,`${run.cost===null?"unknown cost":"$"+run.cost.toFixed(6)} · Enter to resume`,index===state.selectedRun?colors.worker:colors.muted));
     } else if(state.entries.length) {
       for(const entry of state.entries) {
         if(entry.kind==="draft"&&!state.expanded&&!entry.expanded)continue;
